@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { access, readFile, readdir } from 'node:fs/promises';
 import { dirname, join, normalize, relative, resolve, sep } from 'node:path';
 import process from 'node:process';
@@ -6,6 +7,7 @@ import Ajv2020 from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
 
 const root = resolve(import.meta.dirname, '..');
+const canonicalRoot = realpathSync(root);
 const errors = [];
 const forbiddenKeys = new Set([
   'accessToken',
@@ -48,6 +50,23 @@ function assertContained(relativePath, label) {
   if (rel.startsWith(`..${sep}`) || rel === '..') {
     fail(`${label}: path escapes repository root`);
     return null;
+  }
+  // Lexical checks alone do not prevent an in-repo symlink from pointing at
+  // credentials, dumps, or migration files outside this checkout.
+  try {
+    const canonical = realpathSync(candidate);
+    const safeRelative = relative(canonicalRoot, canonical);
+    if (safeRelative === '..' || safeRelative.startsWith(`..${sep}`)) {
+      fail(`${label}: symlink target escapes repository root`);
+      return null;
+    }
+  } catch (error) {
+    // A required missing file is reported by the existing existence checks.
+    // All other realpath failures fail closed rather than skipping validation.
+    if (error.code !== 'ENOENT') {
+      fail(`${label}: cannot safely resolve path`);
+      return null;
+    }
   }
   return candidate;
 }
